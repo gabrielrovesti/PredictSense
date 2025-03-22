@@ -1,0 +1,318 @@
+# deployment/docker-compose.yml
+version: '3.8'
+
+services:
+  # DATABASE
+  postgres:
+    image: postgres:14-alpine
+    container_name: predictsense-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-predictsense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-predictsensepass}
+      POSTGRES_DB: ${POSTGRES_DB:-predictsense}
+      PGDATA: /data/postgres
+    volumes:
+      - postgres_data:/data/postgres
+      - ./deployment/scripts/init-db:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U predictsense"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - predictsense-network
+
+  # CACHE
+  redis:
+    image: redis:7-alpine
+    container_name: predictsense-redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-predictsensepass}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - predictsense-network
+
+  # MESSAGING
+  rabbitmq:
+    image: rabbitmq:3.10-management-alpine
+    container_name: predictsense-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-predictsense}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-predictsensepass}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - predictsense-network
+
+  # ML TRACKING
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.6.0
+    container_name: predictsense-mlflow
+    restart: unless-stopped
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://${POSTGRES_USER:-predictsense}:${POSTGRES_PASSWORD:-predictsensepass}@postgres:5432/${POSTGRES_DB:-predictsense}
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - predictsense-network
+
+  # MONITORING
+  prometheus:
+    image: prom/prometheus:v2.43.0
+    container_name: predictsense-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./deployment/config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    networks:
+      - predictsense-network
+
+  grafana:
+    image: grafana/grafana:9.5.1
+    container_name: predictsense-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: "grafana-piechart-panel,grafana-worldmap-panel"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deployment/config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./deployment/config/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - predictsense-network
+
+  # MICROSERVIZI DELL'APPLICAZIONE
+  collector:
+    build:
+      context: .
+      dockerfile: deployment/docker/collector.Dockerfile
+    container_name: predictsense-collector
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-predictsense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-predictsensepass}
+      POSTGRES_DB: ${POSTGRES_DB:-predictsense}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-predictsense}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-predictsensepass}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      COLLECTOR_POLLING_INTERVAL: ${COLLECTOR_POLLING_INTERVAL:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - collector_data:/app/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - predictsense-network
+
+  processor:
+    build:
+      context: .
+      dockerfile: deployment/docker/processor.Dockerfile
+    container_name: predictsense-processor
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-predictsense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-predictsensepass}
+      POSTGRES_DB: ${POSTGRES_DB:-predictsense}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-predictsense}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-predictsensepass}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-predictsensepass}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - processor_data:/app/data
+    depends_on:
+      - collector
+      - redis
+    networks:
+      - predictsense-network
+
+  trainer:
+    build:
+      context: .
+      dockerfile: deployment/docker/trainer.Dockerfile
+    container_name: predictsense-trainer
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-predictsense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-predictsensepass}
+      POSTGRES_DB: ${POSTGRES_DB:-predictsense}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-predictsense}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-predictsensepass}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TRAINER_SCHEDULE: ${TRAINER_SCHEDULE:-0 0 * * *}
+      USE_GPU: ${USE_GPU:-false}
+    volumes:
+      - trainer_data:/app/data
+      - models_data:/app/models
+    depends_on:
+      - processor
+      - mlflow
+    networks:
+      - predictsense-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+      # Solo se USE_GPU=true
+
+  detector:
+    build:
+      context: .
+      dockerfile: deployment/docker/detector.Dockerfile
+    container_name: predictsense-detector
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-predictsense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-predictsensepass}
+      POSTGRES_DB: ${POSTGRES_DB:-predictsense}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-predictsense}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-predictsensepass}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-predictsensepass}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - models_data:/app/models
+    depends_on:
+      - trainer
+      - processor
+    networks:
+      - predictsense-network
+
+  api:
+    build:
+      context: .
+      dockerfile: deployment/docker/api.Dockerfile
+    container_name: predictsense-api
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-predictsense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-predictsensepass}
+      POSTGRES_DB: ${POSTGRES_DB:-predictsense}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-predictsense}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-predictsensepass}
+      RABBITMQ_VHOST: ${RABBITMQ_VHOST:-/}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-predictsensepass}
+      API_KEY: ${API_KEY:-predictsense_api_key}
+      ENABLE_CORS: ${ENABLE_CORS:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - detector
+    networks:
+      - predictsense-network
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: deployment/docker/dashboard.Dockerfile
+    container_name: predictsense-dashboard
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:8000
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-predictsense}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-predictsensepass}
+      POSTGRES_DB: ${POSTGRES_DB:-predictsense}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+    networks:
+      - predictsense-network
+
+networks:
+  predictsense-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  mlflow_data:
+  prometheus_data:
+  grafana_data:
+  collector_data:
+  processor_data:
+  trainer_data:
+  models_data:

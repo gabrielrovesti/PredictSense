@@ -1,0 +1,35 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="predictsense",
+    version="1.0.0",
+    packages=find_packages(),
+    install_requires=[
+        "fastapi>=0.95.0",
+        "uvicorn>=0.21.1",
+        "pydantic>=1.10.7",
+        "python-dotenv>=1.0.0",
+        "asyncpg>=0.27.0",
+        "aio-pika>=9.0.5",
+        "redis>=4.5.4",
+        "tenacity>=8.2.2",
+        "tensorflow>=2.12.0",
+        "numpy>=1.24.2",
+        "pandas>=2.0.0",
+        "scikit-learn>=1.2.2",
+        "mlflow>=2.3.0",
+        "streamlit>=1.21.0",
+        "plotly>=5.14.1",
+    ],
+    python_requires=">=3.9",
+    author="PredictSense Team",
+    author_email="info@predictsense.com",
+    description="Anomaly Detection System based on Machine Learning",
+    keywords="machine learning, anomaly detection, ml, ai",
+    classifiers=[
+        "Development Status :: 4 - Beta",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.9",
+    ],
+)

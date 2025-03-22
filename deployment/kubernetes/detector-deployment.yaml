@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: predictsense-detector
+  namespace: predictsense
+  labels:
+    app: predictsense
+    component: detector
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: predictsense
+      component: detector
+  template:
+    metadata:
+      labels:
+        app: predictsense
+        component: detector
+    spec:
+      containers:
+      - name: detector
+        image: ghcr.io/${GITHUB_REPOSITORY}/detector:${VERSION}
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        env:
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: predictsense-config
+              key: postgres-host
+        - name: POSTGRES_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: predictsense-config
+              key: postgres-port
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: predictsense-secrets
+              key: postgres-user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: predictsense-secrets
+              key: postgres-password
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: predictsense-config
+              key: postgres-db
+        - name: RABBITMQ_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: predictsense-config
+              key: rabbitmq-host
+        - name: RABBITMQ_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: predictsense-config
+              key: rabbitmq-port
+        - name: RABBITMQ_USER
+          valueFrom:
+            secretKeyRef:
+              name: predictsense-secrets
+              key: rabbitmq-user
+        - name: RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: predictsense-secrets
+              key: rabbitmq-password
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: predictsense-config
+              key: redis-host
+        - name: REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: predictsense-config
+              key: redis-port
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: predictsense-secrets
+              key: redis-password
+        - name: LOG_LEVEL
+          value: "INFO"
+        volumeMounts:
+        - name: models-volume
+          mountPath: /app/models
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: models-volume
+        persistentVolumeClaim:
+          claimName: models-pvc

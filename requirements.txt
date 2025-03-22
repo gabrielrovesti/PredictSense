@@ -1,0 +1,30 @@
+# Core dependencies
+fastapi==0.95.0
+uvicorn==0.21.1
+pydantic==1.10.7
+python-dotenv==1.0.0
+
+# Database & messaging
+asyncpg==0.27.0
+aio-pika==9.0.5
+redis==4.5.4
+tenacity==8.2.2
+
+# Machine Learning
+tensorflow==2.12.0
+numpy==1.24.2
+pandas==2.0.0
+scikit-learn==1.2.2
+mlflow==2.3.0
+
+# Visualization
+streamlit==1.21.0
+plotly==5.14.1
+
+# Testing
+pytest==7.3.1
+pytest-asyncio==0.21.0
+pytest-cov==4.1.0
+
+# Utilities
+requests==2.28.2

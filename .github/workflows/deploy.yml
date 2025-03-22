@@ -1,0 +1,63 @@
+name: Deploy to Production
+
+on:
+  workflow_run:
+    workflows: ["Build and Push Docker Images"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'latest'
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+    
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --name predictsense-cluster --region us-east-1
+    
+    - name: Deploy to Kubernetes
+      run: |
+        # Sostituisci le variabili nei manifesti Kubernetes
+        export VERSION=$(git rev-parse --short HEAD)
+        envsubst < deployment/kubernetes/collector-deployment.yaml | kubectl apply -f -
+        envsubst < deployment/kubernetes/processor-deployment.yaml | kubectl apply -f -
+        envsubst < deployment/kubernetes/trainer-deployment.yaml | kubectl apply -f -
+        envsubst < deployment/kubernetes/detector-deployment.yaml | kubectl apply -f -
+        envsubst < deployment/kubernetes/api-deployment.yaml | kubectl apply -f -
+        envsubst < deployment/kubernetes/dashboard-deployment.yaml | kubectl apply -f -
+    
+    - name: Verify deployment
+      run: |
+        kubectl rollout status deployment/predictsense-collector
+        kubectl rollout status deployment/predictsense-processor
+        kubectl rollout status deployment/predictsense-trainer
+        kubectl rollout status deployment/predictsense-detector
+        kubectl rollout status deployment/predictsense-api
+        kubectl rollout status deployment/predictsense-dashboard
+    
+    - name: Notify deployment status
+      uses: rtCamp/action-slack-notify@v2
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        SLACK_CHANNEL: deployments
+        SLACK_COLOR: ${{ job.status }}
+        SLACK_TITLE: Deployment Status
+        SLACK_MESSAGE: 'PredictSense deployment to production ${{ job.status }}'
+        SLACK_FOOTER: 'GitHub Actions'
